@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+numpy
+librosa
+soundfile
+python-multipart
+requests
+websockets
+
