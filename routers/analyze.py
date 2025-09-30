@@ -7,7 +7,7 @@ import numpy as np
 import soundfile as sf
 
 from dsp import autocorrelation_pitch, yin_pitch, apply_ema, apply_median
-from presets import freq_to_note, nearest_target, PRESETS
+from presets import freq_to_note, nearest_target, PRESETS, note_to_freq
 from settings import settings
 
 
@@ -25,6 +25,8 @@ async def analyze(
     hop: int = Query(None),
     smooth: str = Query(None, regex="^(none|ema|median)$"),
     vad_rms: float = Query(0.0, description="RMS threshold for VAD; 0 to disable"),
+    mode: str = Query(None, description="auto|manual"),
+    manual_note: str = Query(None, description="e.g., E2, A2, D3... when mode=manual"),
 ):
     if file.content_type not in ("audio/wav", "audio/x-wav", "audio/wave"):
         raise HTTPException(status_code=400, detail="Only WAV files are supported")
@@ -77,9 +79,20 @@ async def analyze(
         f0_values = apply_median(f0_values, window=settings.median_window)
 
     out_frames = []
+    use_manual = (mode or "").lower() == "manual" and (manual_note or "").strip() != ""
+    manual_note_clean = (manual_note or "").strip().upper() if use_manual else None
     for pf, f0 in zip(frames, f0_values):
         note, cents_from_note = freq_to_note(f0, a4_hz=a4 or settings.a4_hz)
-        target_note, target_freq, cents_to_target = nearest_target(f0, string_set)
+        if use_manual and manual_note_clean is not None:
+            try:
+                target_freq_val = float(note_to_freq(manual_note_clean, a4_hz=a4 or settings.a4_hz))
+                target_note = manual_note_clean
+                cents_to_target = float(1200.0 * np.log2((target_freq_val if target_freq_val > 0 else 1.0) / (f0 if f0 > 0 else 1.0))) if f0 > 0 else float("nan")
+                target_freq = target_freq_val
+            except Exception:
+                target_note, target_freq, cents_to_target = nearest_target(f0, string_set)
+        else:
+            target_note, target_freq, cents_to_target = nearest_target(f0, string_set)
         out_frames.append(
             {
                 "time": pf.time_s,

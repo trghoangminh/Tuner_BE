@@ -7,7 +7,7 @@ import numpy as np
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from dsp import autocorrelation_pitch, yin_pitch, apply_ema, apply_median
-from presets import freq_to_note, nearest_target, PRESETS
+from presets import freq_to_note, nearest_target, PRESETS, note_to_freq
 from settings import settings
 
 
@@ -24,6 +24,8 @@ async def ws_pitch(
     frame: int | None = None,
     hop: int | None = None,
     vad_rms: float | None = None,
+    mode: str | None = None,
+    manual_note: Optional[str] = None,
 ):
     await websocket.accept()
     preset_key = preset if preset in PRESETS else "guitar_standard"
@@ -61,9 +63,34 @@ async def ws_pitch(
                 elif smoothing == "median":
                     f0_values = apply_median(f0_values, window=settings.median_window)
 
+                # Determine targeting behavior
+                normalized_mode = (mode or "").lower()
+                use_manual = normalized_mode == "manual" and (manual_note or "").strip() != ""
+                manual_note_clean: Optional[str] = (manual_note or "").strip().upper() if use_manual else None
+
                 for pf, f0 in zip(frames, f0_values):
                     note, cents_from_note = freq_to_note(f0, a4_hz=a4 or settings.a4_hz)
-                    target_note, target_freq, cents_to_target = nearest_target(f0, string_set)
+                    if normalized_mode == "chromatic":
+                        # Chromatic: target equals the detected nearest tempered note
+                        target_note = note
+                        try:
+                            target_freq = float(note_to_freq(target_note, a4_hz=a4 or settings.a4_hz)) if target_note else float("nan")
+                        except Exception:
+                            target_freq = float("nan")
+                        cents_to_target = cents_from_note
+                    elif use_manual and manual_note_clean is not None:
+                        # Lock target to the provided manual note
+                        try:
+                            target_freq_val = float(note_to_freq(manual_note_clean, a4_hz=a4 or settings.a4_hz))
+                            target_note = manual_note_clean
+                            # cents to target: positive if target higher than f0
+                            cents_to_target = float(1200.0 * np.log2((target_freq_val if target_freq_val > 0 else 1.0) / (f0 if f0 > 0 else 1.0))) if f0 > 0 else float("nan")
+                            target_freq = target_freq_val
+                        except Exception:
+                            # Fallback to nearest target if parsing fails
+                            target_note, target_freq, cents_to_target = nearest_target(f0, string_set)
+                    else:
+                        target_note, target_freq, cents_to_target = nearest_target(f0, string_set)
                     payload = {
                         "time": pf.time_s,
                         "f0_hz": f0,
