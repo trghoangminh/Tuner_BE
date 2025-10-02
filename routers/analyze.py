@@ -6,7 +6,7 @@ import librosa
 import numpy as np
 import soundfile as sf
 
-from dsp import autocorrelation_pitch, yin_pitch, apply_ema, apply_median
+from dsp import yin_pitch, apply_ema, apply_median
 from presets import freq_to_note, nearest_target, PRESETS, note_to_freq
 from settings import settings
 
@@ -41,14 +41,10 @@ async def analyze(
         audio = librosa.resample(y=audio.astype(float), orig_sr=sr, target_sr=settings.sample_rate, res_type="kaiser_best")
         sr = settings.sample_rate
 
-    # Choose algorithm
-    algorithm = (algo or settings.algorithm).lower()
+    # Use YIN algorithm (only algorithm available)
     frame_len = frame or settings.frame_length
     hop_len = hop or settings.hop_length
-    if algorithm == "yin":
-        frames = yin_pitch(audio, sample_rate=sr, frame_length=frame_len, hop_length=hop_len)
-    else:
-        frames = autocorrelation_pitch(audio, sample_rate=sr, frame_length=frame_len, hop_length=hop_len)
+    frames = yin_pitch(audio, sample_rate=sr, frame_length=frame_len, hop_length=hop_len, fmin_hz=30.0, fmax_hz=1200.0)
 
     preset_key = preset if preset in PRESETS else "guitar_standard"
     string_set = PRESETS[preset_key].strings
@@ -57,18 +53,25 @@ async def analyze(
     if vad_rms > 0:
         hop_len = hop or settings.hop_length
         frame_len = frame or settings.frame_length
-        # recompute frames for RMS check
-        rms_vals = []
-        window = np.hanning(frame_len).astype(np.float32)
-        for start in range(0, max(0, len(audio) - frame_len + 1), hop_len):
-            fr = audio[start : start + frame_len]
-            fr = fr * window
-            rms = float(np.sqrt(np.mean(fr**2) + 1e-12))
-            rms_vals.append(rms)
-        # zero f0 for rms below threshold
-        for i, r in enumerate(rms_vals):
-            if r < vad_rms and i < len(frames):
-                frames[i].f0_hz = 0.0
+        # Check overall audio level first
+        overall_rms = float(np.sqrt(np.mean(audio**2) + 1e-12))
+        if overall_rms < vad_rms:
+            # Suppress all frames if overall audio is too quiet
+            for frame in frames:
+                frame.f0_hz = 0.0
+        else:
+            # Apply per-frame VAD
+            rms_vals = []
+            window = np.hanning(frame_len).astype(np.float32)
+            for start in range(0, max(0, len(audio) - frame_len + 1), hop_len):
+                fr = audio[start : start + frame_len]
+                fr = fr * window
+                rms = float(np.sqrt(np.mean(fr**2) + 1e-12))
+                rms_vals.append(rms)
+            # zero f0 for rms below threshold
+            for i, r in enumerate(rms_vals):
+                if r < vad_rms and i < len(frames):
+                    frames[i].f0_hz = 0.0
 
     # Optional smoothing on f0 values
     f0_values = [float(pf.f0_hz) for pf in frames]

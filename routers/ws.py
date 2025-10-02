@@ -6,7 +6,7 @@ from typing import Optional
 import numpy as np
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from dsp import autocorrelation_pitch, yin_pitch, apply_ema, apply_median
+from dsp import yin_pitch, apply_ema, apply_median
 from presets import freq_to_note, nearest_target, PRESETS, note_to_freq
 from settings import settings
 
@@ -39,13 +39,10 @@ async def ws_pitch(
                 # Expect Float32 PCM (mono) in [-1, 1]
                 audio = np.frombuffer(chunk, dtype=np.float32)
 
-                algorithm = (algo or settings.algorithm).lower()
+                # Use YIN algorithm (only algorithm available)
                 frame_len = frame or settings.frame_length
                 hop_len = hop or settings.hop_length
-                if algorithm == "yin":
-                    frames = yin_pitch(audio, sample_rate=settings.sample_rate, frame_length=frame_len, hop_length=hop_len)
-                else:
-                    frames = autocorrelation_pitch(audio, sample_rate=settings.sample_rate, frame_length=frame_len, hop_length=hop_len)
+                frames = yin_pitch(audio, sample_rate=settings.sample_rate, frame_length=frame_len, hop_length=hop_len, fmin_hz=30.0, fmax_hz=1200.0)
 
                 f0_values = [float(pf.f0_hz) for pf in frames]
                 if vad_rms and vad_rms > 0:
@@ -54,9 +51,17 @@ async def ws_pitch(
                     for start in range(0, max(0, len(audio) - frame_len + 1), hop_len):
                         fr = audio[start : start + frame_len] * window
                         rms_vals.append(float(np.sqrt(np.mean(fr**2) + 1e-12)))
-                    for i, r in enumerate(rms_vals):
-                        if r < vad_rms and i < len(f0_values):
-                            f0_values[i] = 0.0
+                    
+                    # Check if overall audio level is too low - if so, suppress all frames
+                    overall_rms = float(np.sqrt(np.mean(audio**2) + 1e-12))
+                    if overall_rms < vad_rms:
+                        # Suppress all frames if overall audio is too quiet
+                        f0_values = [0.0] * len(f0_values)
+                    else:
+                        # Apply per-frame VAD
+                        for i, r in enumerate(rms_vals):
+                            if r < vad_rms and i < len(f0_values):
+                                f0_values[i] = 0.0
                 smoothing = (smooth or settings.smoothing).lower()
                 if smoothing == "ema":
                     f0_values = apply_ema(f0_values, alpha=settings.ema_alpha)

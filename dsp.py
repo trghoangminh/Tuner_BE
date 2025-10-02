@@ -14,82 +14,12 @@ class PitchFrame:
     f0_hz: float
 
 
-def autocorrelation_pitch(
-    audio: np.ndarray,
-    sample_rate: int | None = None,
-    frame_length: int | None = None,
-    hop_length: int | None = None,
-    fmin_hz: float = 50.0,
-    fmax_hz: float = 1200.0,
-) -> List[PitchFrame]:
-    sr = sample_rate or settings.sample_rate
-    n_fft = frame_length or settings.frame_length
-    hop = hop_length or settings.hop_length
-
-    if audio.ndim > 1:
-        audio = np.mean(audio, axis=-1)
-
-    audio = audio.astype(np.float32)
-    if audio.size == 0:
-        return []
-
-    frames: List[PitchFrame] = []
-    min_lag = int(sr / fmax_hz)
-    max_lag = int(sr / fmin_hz)
-    window = np.hanning(n_fft).astype(np.float32)
-    # Pre-normalize loudness to improve stability
-    std = np.std(audio) + 1e-12
-    audio = audio / std
-
-    for start in range(0, max(0, len(audio) - n_fft + 1), hop):
-        frame = audio[start : start + n_fft]
-        if frame.shape[0] < n_fft:
-            break
-        frame = frame * window
-        frame = frame - np.mean(frame)
-        if np.allclose(frame, 0.0):
-            frames.append(PitchFrame(time_s=start / sr, f0_hz=0.0))
-            continue
-
-        # Autocorrelation via FFT convolution
-        fft_size = 1
-        while fft_size < 2 * n_fft:
-            fft_size <<= 1
-        spectrum = np.fft.rfft(frame, n=fft_size)
-        power = spectrum * np.conj(spectrum)
-        acf = np.fft.irfft(power)
-        acf = acf[: max_lag + 1]
-        acf[: min_lag] = 0.0
-
-        # Peak picking
-        lag = int(np.argmax(acf))
-        if lag <= 0 or lag >= len(acf):
-            f0 = 0.0
-        else:
-            # Parabolic interpolation around peak for sub-sample accuracy
-            if 1 <= lag < len(acf) - 1:
-                y0, y1, y2 = acf[lag - 1], acf[lag], acf[lag + 1]
-                denom = (y0 - 2 * y1 + y2)
-                if abs(denom) > 1e-12:
-                    delta = 0.5 * (y0 - y2) / denom
-                else:
-                    delta = 0.0
-            else:
-                delta = 0.0
-            refined_lag = lag + delta
-            f0 = float(sr / refined_lag) if refined_lag > 0 else 0.0
-
-        frames.append(PitchFrame(time_s=start / sr, f0_hz=f0))
-
-    return frames
-
-
 def yin_pitch(
     audio: np.ndarray,
     sample_rate: int | None = None,
     frame_length: int | None = None,
     hop_length: int | None = None,
-    fmin_hz: float = 50.0,
+    fmin_hz: float = 30.0,
     fmax_hz: float = 1200.0,
 ) -> List[PitchFrame]:
     sr = sample_rate or settings.sample_rate
